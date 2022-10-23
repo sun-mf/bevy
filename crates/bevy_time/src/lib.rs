@@ -16,7 +16,7 @@ use crossbeam_channel::{Receiver, Sender};
 pub mod prelude {
     //! The Bevy Time Prelude.
     #[doc(hidden)]
-    pub use crate::{Time, Timer};
+    pub use crate::{Time, Timer, TimerMode};
 }
 
 use bevy_app::prelude::*;
@@ -40,10 +40,7 @@ impl Plugin for TimePlugin {
             .register_type::<Stopwatch>()
             // time system is added as an "exclusive system" to ensure it runs before other systems
             // in CoreStage::First
-            .add_system_to_stage(
-                CoreStage::First,
-                time_system.exclusive_system().at_start().label(TimeSystem),
-            );
+            .add_system_to_stage(CoreStage::First, time_system.at_start().label(TimeSystem));
     }
 }
 

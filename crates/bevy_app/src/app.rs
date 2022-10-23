@@ -3,7 +3,7 @@ pub use bevy_derive::AppLabel;
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::{
     event::{Event, Events},
-    prelude::{FromWorld, IntoExclusiveSystem},
+    prelude::FromWorld,
     schedule::{
         IntoSystemDescriptor, Schedule, ShouldRun, Stage, StageLabel, State, StateData, SystemSet,
         SystemStage,
@@ -70,10 +70,30 @@ pub struct App {
     sub_apps: HashMap<AppLabelId, SubApp>,
 }
 
+impl Debug for App {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "App {{ sub_apps: ")?;
+        f.debug_map()
+            .entries(self.sub_apps.iter().map(|(k, v)| (k, v)))
+            .finish()?;
+        write!(f, "}}")
+    }
+}
+
 /// Each `SubApp` has its own [`Schedule`] and [`World`], enabling a separation of concerns.
 struct SubApp {
     app: App,
     runner: Box<dyn Fn(&mut World, &mut App)>,
+}
+
+impl Debug for SubApp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SubApp {{ app: ")?;
+        f.debug_map()
+            .entries(self.app.sub_apps.iter().map(|(k, v)| (k, v)))
+            .finish()?;
+        write!(f, "}}")
+    }
 }
 
 impl Default for App {
@@ -84,7 +104,7 @@ impl Default for App {
 
         app.add_default_stages()
             .add_event::<AppExit>()
-            .add_system_to_stage(CoreStage::Last, World::clear_trackers.exclusive_system());
+            .add_system_to_stage(CoreStage::Last, World::clear_trackers);
 
         #[cfg(feature = "bevy_ci_testing")]
         {
@@ -151,7 +171,9 @@ impl App {
     /// # use bevy_ecs::prelude::*;
     /// # let mut app = App::new();
     /// #
-    /// app.add_stage("my_stage", SystemStage::parallel());
+    /// #[derive(StageLabel)]
+    /// struct MyStage;
+    /// app.add_stage(MyStage, SystemStage::parallel());
     /// ```
     pub fn add_stage<S: Stage>(&mut self, label: impl StageLabel, stage: S) -> &mut Self {
         self.schedule.add_stage(label, stage);
@@ -168,7 +190,9 @@ impl App {
     /// # use bevy_ecs::prelude::*;
     /// # let mut app = App::new();
     /// #
-    /// app.add_stage_after(CoreStage::Update, "my_stage", SystemStage::parallel());
+    /// #[derive(StageLabel)]
+    /// struct MyStage;
+    /// app.add_stage_after(CoreStage::Update, MyStage, SystemStage::parallel());
     /// ```
     pub fn add_stage_after<S: Stage>(
         &mut self,
@@ -190,7 +214,9 @@ impl App {
     /// # use bevy_ecs::prelude::*;
     /// # let mut app = App::new();
     /// #
-    /// app.add_stage_before(CoreStage::Update, "my_stage", SystemStage::parallel());
+    /// #[derive(StageLabel)]
+    /// struct MyStage;
+    /// app.add_stage_before(CoreStage::Update, MyStage, SystemStage::parallel());
     /// ```
     pub fn add_stage_before<S: Stage>(
         &mut self,
@@ -212,7 +238,9 @@ impl App {
     /// # use bevy_ecs::prelude::*;
     /// # let mut app = App::new();
     /// #
-    /// app.add_startup_stage("my_startup_stage", SystemStage::parallel());
+    /// #[derive(StageLabel)]
+    /// struct MyStartupStage;
+    /// app.add_startup_stage(MyStartupStage, SystemStage::parallel());
     /// ```
     pub fn add_startup_stage<S: Stage>(&mut self, label: impl StageLabel, stage: S) -> &mut Self {
         self.schedule
@@ -234,9 +262,11 @@ impl App {
     /// # use bevy_ecs::prelude::*;
     /// # let mut app = App::new();
     /// #
+    /// #[derive(StageLabel)]
+    /// struct MyStartupStage;
     /// app.add_startup_stage_after(
     ///     StartupStage::Startup,
-    ///     "my_startup_stage",
+    ///     MyStartupStage,
     ///     SystemStage::parallel()
     /// );
     /// ```
@@ -265,9 +295,11 @@ impl App {
     /// # use bevy_ecs::prelude::*;
     /// # let mut app = App::new();
     /// #
+    /// #[derive(StageLabel)]
+    /// struct MyStartupStage;
     /// app.add_startup_stage_before(
     ///     StartupStage::Startup,
-    ///     "my_startup_stage",
+    ///     MyStartupStage,
     ///     SystemStage::parallel()
     /// );
     /// ```
@@ -382,7 +414,7 @@ impl App {
         use std::any::TypeId;
         assert!(
             stage_label.type_id() != TypeId::of::<StartupStage>(),
-            "add systems to a startup stage using App::add_startup_system_to_stage"
+            "use `add_startup_system_to_stage` instead of `add_system_to_stage` to add a system to a StartupStage"
         );
         self.schedule.add_system_to_stage(stage_label, system);
         self
@@ -417,7 +449,7 @@ impl App {
         use std::any::TypeId;
         assert!(
             stage_label.type_id() != TypeId::of::<StartupStage>(),
-            "add system sets to a startup stage using App::add_startup_system_set_to_stage"
+            "use `add_startup_system_set_to_stage` instead of `add_system_set_to_stage` to add system sets to a StartupStage"
         );
         self.schedule
             .add_system_set_to_stage(stage_label, system_set);

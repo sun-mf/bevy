@@ -29,7 +29,9 @@ mod path;
 /// The `bevy_asset` prelude.
 pub mod prelude {
     #[doc(hidden)]
-    pub use crate::{AddAsset, AssetEvent, AssetServer, Assets, Handle, HandleUntyped};
+    pub use crate::{
+        AddAsset, AssetEvent, AssetServer, AssetServerSettings, Assets, Handle, HandleUntyped,
+    };
 }
 
 pub use anyhow::Error;
@@ -64,7 +66,9 @@ pub enum AssetStage {
 #[derive(Default)]
 pub struct AssetPlugin;
 
-/// [`AssetServer`] settings.
+/// Settings for the [`AssetServer`].
+///
+/// This resource must be added before the [`AssetPlugin`] or `DefaultPlugins` to take effect.
 #[derive(Resource)]
 pub struct AssetServerSettings {
     /// The base folder where assets are loaded from, relative to the executable.

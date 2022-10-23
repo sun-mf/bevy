@@ -1,12 +1,12 @@
 #[warn(missing_docs)]
 mod cursor;
 mod event;
-mod raw_window_handle;
+mod raw_handle;
 mod system;
 mod window;
 mod windows;
 
-pub use crate::raw_window_handle::*;
+pub use crate::raw_handle::*;
 pub use cursor::*;
 pub use event::*;
 pub use system::*;
@@ -17,14 +17,15 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate::{
         CursorEntered, CursorIcon, CursorLeft, CursorMoved, FileDragAndDrop, MonitorSelection,
-        ReceivedCharacter, Window, WindowDescriptor, WindowMoved, WindowPosition, Windows,
+        ReceivedCharacter, Window, WindowDescriptor, WindowMode, WindowMoved, WindowPosition,
+        Windows,
     };
 }
 
 use bevy_app::prelude::*;
 use bevy_ecs::{
     event::Events,
-    schedule::{ParallelSystemDescriptorCoercion, SystemLabel},
+    schedule::{IntoSystemDescriptor, SystemLabel},
     system::Resource,
 };
 

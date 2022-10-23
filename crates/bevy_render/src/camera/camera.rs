@@ -17,7 +17,7 @@ use bevy_ecs::{
     reflect::ReflectComponent,
     system::{Commands, ParamSet, Query, Res},
 };
-use bevy_math::{Mat4, UVec2, Vec2, Vec3};
+use bevy_math::{Mat4, Ray, UVec2, UVec4, Vec2, Vec3};
 use bevy_reflect::prelude::*;
 use bevy_reflect::FromReflect;
 use bevy_transform::components::GlobalTransform;
@@ -70,6 +70,16 @@ pub struct ComputedCameraValues {
     target_info: Option<RenderTargetInfo>,
 }
 
+/// The defining component for camera entities, storing information about how and what to render
+/// through this camera.
+///
+/// The [`Camera`] component is added to an entity to define the properties of the viewpoint from
+/// which rendering occurs. It defines the position of the view to render, the projection method
+/// to transform the 3D objects into a 2D image, as well as the render target into which that image
+/// is produced.
+///
+/// Adding a camera is typically done by adding a bundle, either the `Camera2dBundle` or the
+/// `Camera3dBundle`.
 #[derive(Component, Debug, Reflect, FromReflect, Clone)]
 #[reflect(Component)]
 pub struct Camera {
@@ -77,7 +87,7 @@ pub struct Camera {
     pub viewport: Option<Viewport>,
     /// Cameras with a lower priority will be rendered before cameras with a higher priority.
     pub priority: isize,
-    /// If this is set to true, this camera will be rendered to its specified [`RenderTarget`]. If false, this
+    /// If this is set to `true`, this camera will be rendered to its specified [`RenderTarget`]. If `false`, this
     /// camera will not be rendered.
     pub is_active: bool,
     /// Computed values for this camera, such as the projection matrix and the render target size.
@@ -202,9 +212,36 @@ impl Camera {
         Some((ndc_space_coords.truncate() + Vec2::ONE) / 2.0 * target_size)
     }
 
+    /// Returns a ray originating from the camera, that passes through everything beyond `viewport_position`.
+    ///
+    /// The resulting ray starts on the near plane of the camera.
+    ///
+    /// If the camera's projection is orthographic the direction of the ray is always equal to `camera_transform.forward()`.
+    ///
+    /// To get the world space coordinates with Normalized Device Coordinates, you should use
+    /// [`ndc_to_world`](Self::ndc_to_world).
+    pub fn viewport_to_world(
+        &self,
+        camera_transform: &GlobalTransform,
+        viewport_position: Vec2,
+    ) -> Option<Ray> {
+        let target_size = self.logical_viewport_size()?;
+        let ndc = viewport_position * 2. / target_size - Vec2::ONE;
+
+        let world_near_plane = self.ndc_to_world(camera_transform, ndc.extend(1.))?;
+        // Using EPSILON because passing an ndc with Z = 0 returns NaNs.
+        let world_far_plane = self.ndc_to_world(camera_transform, ndc.extend(f32::EPSILON))?;
+
+        Some(Ray {
+            origin: world_near_plane,
+            direction: (world_far_plane - world_near_plane).normalize(),
+        })
+    }
+
     /// Given a position in world space, use the camera's viewport to compute the Normalized Device Coordinates.
     ///
-    /// Values returned will be between -1.0 and 1.0 when the position is within the viewport.
+    /// When the position is within the viewport the values returned will be between -1.0 and 1.0 on the X and Y axes,
+    /// and between 0.0 and 1.0 on the Z axis.
     /// To get the coordinates in the render target's viewport dimensions, you should use
     /// [`world_to_viewport`](Self::world_to_viewport).
     pub fn world_to_ndc(
@@ -212,16 +249,29 @@ impl Camera {
         camera_transform: &GlobalTransform,
         world_position: Vec3,
     ) -> Option<Vec3> {
-        // Build a transform to convert from world to NDC using camera data
+        // Build a transformation matrix to convert from world space to NDC using camera data
         let world_to_ndc: Mat4 =
             self.computed.projection_matrix * camera_transform.compute_matrix().inverse();
         let ndc_space_coords: Vec3 = world_to_ndc.project_point3(world_position);
 
-        if !ndc_space_coords.is_nan() {
-            Some(ndc_space_coords)
-        } else {
-            None
-        }
+        (!ndc_space_coords.is_nan()).then_some(ndc_space_coords)
+    }
+
+    /// Given a position in Normalized Device Coordinates,
+    /// use the camera's viewport to compute the world space position.
+    ///
+    /// When the position is within the viewport the values returned will be between -1.0 and 1.0 on the X and Y axes,
+    /// and between 0.0 and 1.0 on the Z axis.
+    /// To get the world space coordinates with the viewport position, you should use
+    /// [`world_to_viewport`](Self::world_to_viewport).
+    pub fn ndc_to_world(&self, camera_transform: &GlobalTransform, ndc: Vec3) -> Option<Vec3> {
+        // Build a transformation matrix to convert from NDC to world space using camera data
+        let ndc_to_world =
+            camera_transform.compute_matrix() * self.computed.projection_matrix.inverse();
+
+        let world_space_coords = ndc_to_world.project_point3(ndc);
+
+        (!world_space_coords.is_nan()).then_some(world_space_coords)
     }
 }
 
@@ -305,6 +355,21 @@ impl RenderTarget {
     }
 }
 
+/// System in charge of updating a [`Camera`] when its window or projection changes.
+///
+/// The system detects window creation and resize events to update the camera projection if
+/// needed. It also queries any [`CameraProjection`] component associated with the same entity
+/// as the [`Camera`] one, to automatically update the camera projection matrix.
+///
+/// The system function is generic over the camera projection type, and only instances of
+/// [`OrthographicProjection`] and [`PerspectiveProjection`] are automatically added to
+/// the app, as well as the runtime-selected [`Projection`]. The system runs during the
+/// [`CoreStage::PostUpdate`] stage.
+///
+/// [`OrthographicProjection`]: crate::camera::OrthographicProjection
+/// [`PerspectiveProjection`]: crate::camera::PerspectiveProjection
+/// [`Projection`]: crate::camera::Projection
+/// [`CoreStage::PostUpdate`]: bevy_app::CoreStage::PostUpdate
 pub fn camera_system<T: CameraProjection + Component>(
     mut window_resized_events: EventReader<WindowResized>,
     mut window_created_events: EventReader<WindowCreated>,
@@ -317,9 +382,9 @@ pub fn camera_system<T: CameraProjection + Component>(
     )>,
 ) {
     let mut changed_window_ids = Vec::new();
-    // handle resize events. latest events are handled first because we only want to resize each
-    // window once
-    for event in window_resized_events.iter().rev() {
+
+    // Collect all unique window IDs of changed windows by inspecting created windows
+    for event in window_created_events.iter() {
         if changed_window_ids.contains(&event.id) {
             continue;
         }
@@ -327,9 +392,8 @@ pub fn camera_system<T: CameraProjection + Component>(
         changed_window_ids.push(event.id);
     }
 
-    // handle resize events. latest events are handled first because we only want to resize each
-    // window once
-    for event in window_created_events.iter().rev() {
+    // Collect all unique window IDs of changed windows by inspecting resized windows
+    for event in window_resized_events.iter() {
         if changed_window_ids.contains(&event.id) {
             continue;
         }
@@ -394,14 +458,15 @@ pub fn extract_cameras(
         if !camera.is_active {
             continue;
         }
-        if let (Some(viewport_size), Some(target_size)) = (
+        if let (Some((viewport_origin, _)), Some(viewport_size), Some(target_size)) = (
+            camera.physical_viewport_rect(),
             camera.physical_viewport_size(),
             camera.physical_target_size(),
         ) {
             if target_size.x == 0 || target_size.y == 0 {
                 continue;
             }
-            commands.get_or_spawn(entity).insert_bundle((
+            commands.get_or_spawn(entity).insert((
                 ExtractedCamera {
                     target: camera.target.clone(),
                     viewport: camera.viewport.clone(),
@@ -413,8 +478,12 @@ pub fn extract_cameras(
                 ExtractedView {
                     projection: camera.projection_matrix(),
                     transform: *transform,
-                    width: viewport_size.x,
-                    height: viewport_size.y,
+                    viewport: UVec4::new(
+                        viewport_origin.x,
+                        viewport_origin.y,
+                        viewport_size.x,
+                        viewport_size.y,
+                    ),
                 },
                 visible_entities.clone(),
             ));

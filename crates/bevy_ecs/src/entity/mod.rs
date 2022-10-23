@@ -13,25 +13,22 @@
 //!
 //! |Operation|Command|Method|
 //! |:---:|:---:|:---:|
-//! |Spawn a new entity|[`Commands::spawn`]|[`World::spawn`]|
-//! |Spawn an entity with components|[`Commands::spawn_bundle`]|---|
+//! |Spawn an entity with components|[`Commands::spawn`]|---|
+//! |Spawn an entity without components|[`Commands::spawn_empty`]|[`World::spawn_empty`]|
 //! |Despawn an entity|[`EntityCommands::despawn`]|[`World::despawn`]|
-//! |Insert a component to an entity|[`EntityCommands::insert`]|[`EntityMut::insert`]|
-//! |Insert multiple components to an entity|[`EntityCommands::insert_bundle`]|[`EntityMut::insert_bundle`]|
-//! |Remove a component from an entity|[`EntityCommands::remove`]|[`EntityMut::remove`]|
+//! |Insert a component, bundle, or tuple of components and bundles to an entity|[`EntityCommands::insert`]|[`EntityMut::insert`]|
+//! |Remove a component, bundle, or tuple of components and bundles from an entity|[`EntityCommands::remove`]|[`EntityMut::remove`]|
 //!
 //! [`World`]: crate::world::World
 //! [`Commands::spawn`]: crate::system::Commands::spawn
-//! [`Commands::spawn_bundle`]: crate::system::Commands::spawn_bundle
+//! [`Commands::spawn_empty`]: crate::system::Commands::spawn_empty
 //! [`EntityCommands::despawn`]: crate::system::EntityCommands::despawn
 //! [`EntityCommands::insert`]: crate::system::EntityCommands::insert
-//! [`EntityCommands::insert_bundle`]: crate::system::EntityCommands::insert_bundle
 //! [`EntityCommands::remove`]: crate::system::EntityCommands::remove
 //! [`World::spawn`]: crate::world::World::spawn
-//! [`World::spawn_bundle`]: crate::world::World::spawn_bundle
+//! [`World::spawn_empty`]: crate::world::World::spawn_empty
 //! [`World::despawn`]: crate::world::World::despawn
 //! [`EntityMut::insert`]: crate::world::EntityMut::insert
-//! [`EntityMut::insert_bundle`]: crate::world::EntityMut::insert_bundle
 //! [`EntityMut::remove`]: crate::world::EntityMut::remove
 mod map_entities;
 mod serde;
@@ -69,19 +66,20 @@ type IdCursor = isize;
 ///
 /// ```
 /// # use bevy_ecs::prelude::*;
-/// #
+/// # #[derive(Component)]
+/// # struct SomeComponent;
 /// fn setup(mut commands: Commands) {
 ///     // Calling `spawn` returns `EntityCommands`.
-///     let entity = commands.spawn().id();
+///     let entity = commands.spawn(SomeComponent).id();
 /// }
 ///
 /// fn exclusive_system(world: &mut World) {
 ///     // Calling `spawn` returns `EntityMut`.
-///     let entity = world.spawn().id();
+///     let entity = world.spawn(SomeComponent).id();
 /// }
 /// #
 /// # bevy_ecs::system::assert_is_system(setup);
-/// # bevy_ecs::system::IntoExclusiveSystem::exclusive_system(exclusive_system);
+/// # bevy_ecs::system::assert_is_system(exclusive_system);
 /// ```
 ///
 /// It can be used to refer to a specific entity to apply [`EntityCommands`], or to call [`Query::get`] (or similar methods) to access its components.
@@ -166,7 +164,7 @@ impl Entity {
     ///     }
     /// }
     /// ```
-    pub fn from_raw(id: u32) -> Entity {
+    pub const fn from_raw(id: u32) -> Entity {
         Entity { id, generation: 0 }
     }
 
@@ -183,7 +181,7 @@ impl Entity {
     /// Reconstruct an `Entity` previously destructured with [`Entity::to_bits`].
     ///
     /// Only useful when applied to results from `to_bits` in the same instance of an application.
-    pub fn from_bits(bits: u64) -> Self {
+    pub const fn from_bits(bits: u64) -> Self {
         Self {
             generation: (bits >> 32) as u32,
             id: bits as u32,
@@ -196,7 +194,7 @@ impl Entity {
     /// with both live and dead entities. Useful for compactly representing entities within a
     /// specific snapshot of the world, such as when serializing.
     #[inline]
-    pub fn id(self) -> u32 {
+    pub const fn id(self) -> u32 {
         self.id
     }
 
@@ -204,7 +202,7 @@ impl Entity {
     /// entity with a given id is despawned. This serves as a "count" of the number of times a
     /// given id has been reused (id, generation) pairs uniquely identify a given Entity.
     #[inline]
-    pub fn generation(self) -> u32 {
+    pub const fn generation(self) -> u32 {
         self.generation
     }
 }
@@ -550,7 +548,7 @@ impl Entities {
             // If this entity was manually created, then free_cursor might be positive
             // Returning None handles that case correctly
             let num_pending = usize::try_from(-free_cursor).ok()?;
-            (idu < self.meta.len() + num_pending).then(|| Entity { generation: 0, id })
+            (idu < self.meta.len() + num_pending).then_some(Entity { generation: 0, id })
         }
     }
 
@@ -696,5 +694,22 @@ mod tests {
 
         assert!(entities.contains(e));
         assert!(entities.get(e).is_none());
+    }
+
+    #[test]
+    fn entity_const() {
+        const C1: Entity = Entity::from_raw(42);
+        assert_eq!(42, C1.id);
+        assert_eq!(0, C1.generation);
+
+        const C2: Entity = Entity::from_bits(0x0000_00ff_0000_00cc);
+        assert_eq!(0x0000_00cc, C2.id);
+        assert_eq!(0x0000_00ff, C2.generation);
+
+        const C3: u32 = Entity::from_raw(33).id();
+        assert_eq!(33, C3);
+
+        const C4: u32 = Entity::from_bits(0x00dd_00ff_0000_0000).generation();
+        assert_eq!(0x00dd_00ff, C4);
     }
 }

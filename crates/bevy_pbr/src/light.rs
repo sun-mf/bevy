@@ -467,7 +467,7 @@ pub fn add_clusters(
         // actual settings here don't matter - they will be overwritten in assign_lights_to_clusters
         commands
             .entity(entity)
-            .insert_bundle((Clusters::default(), config));
+            .insert((Clusters::default(), config));
     }
 }
 
@@ -1450,7 +1450,7 @@ pub fn update_point_light_frusta(
         Mat4::perspective_infinite_reverse_rh(std::f32::consts::FRAC_PI_2, 1.0, POINT_LIGHT_NEAR_Z);
     let view_rotations = CUBE_MAP_FACES
         .iter()
-        .map(|CubeMapFace { target, up }| Transform::identity().looking_at(*target, *up))
+        .map(|CubeMapFace { target, up }| Transform::IDENTITY.looking_at(*target, *up))
         .collect::<Vec<_>>();
 
     for (entity, transform, point_light, mut cubemap_frusta) in &mut views {

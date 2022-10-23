@@ -16,7 +16,7 @@ use crate::{
         StorageType,
     },
     entity::{AllocAtWithoutReplacement, Entities, Entity},
-    query::{QueryState, WorldQuery},
+    query::{QueryState, ReadOnlyWorldQuery, WorldQuery},
     storage::{Column, SparseSet, Storages},
     system::Resource,
 };
@@ -211,10 +211,7 @@ impl World {
     /// }
     ///
     /// let mut world = World::new();
-    /// let entity = world.spawn()
-    ///     .insert(Position { x: 0.0, y: 0.0 })
-    ///     .id();
-    ///
+    /// let entity = world.spawn(Position { x: 0.0, y: 0.0 }).id();
     /// let position = world.entity(entity).get::<Position>().unwrap();
     /// assert_eq!(position.x, 0.0);
     /// ```
@@ -239,9 +236,7 @@ impl World {
     /// }
     ///
     /// let mut world = World::new();
-    /// let entity = world.spawn()
-    ///     .insert(Position { x: 0.0, y: 0.0 })
-    ///     .id();
+    /// let entity = world.spawn(Position { x: 0.0, y: 0.0 }).id();
     /// let mut entity_mut = world.entity_mut(entity);
     /// let mut position = entity_mut.get_mut::<Position>().unwrap();
     /// position.x = 1.0;
@@ -294,7 +289,7 @@ impl World {
             }
             AllocAtWithoutReplacement::DidNotExist => {
                 // SAFETY: entity was just allocated
-                Some(unsafe { self.spawn_at_internal(entity) })
+                Some(unsafe { self.spawn_at_empty_internal(entity) })
             }
             AllocAtWithoutReplacement::ExistsWithWrongGeneration => None,
         }
@@ -314,10 +309,7 @@ impl World {
     /// }
     ///
     /// let mut world = World::new();
-    /// let entity = world.spawn()
-    ///     .insert(Position { x: 0.0, y: 0.0 })
-    ///     .id();
-    ///
+    /// let entity = world.spawn(Position { x: 0.0, y: 0.0 }).id();
     /// let entity_ref = world.get_entity(entity).unwrap();
     /// let position = entity_ref.get::<Position>().unwrap();
     /// assert_eq!(position.x, 0.0);
@@ -326,6 +318,16 @@ impl World {
     pub fn get_entity(&self, entity: Entity) -> Option<EntityRef> {
         let location = self.entities.get(entity)?;
         Some(EntityRef::new(self, entity, location))
+    }
+
+    /// Returns an [`Entity`] iterator of current entities.
+    ///
+    /// This is useful in contexts where you only have read-only access to the [`World`].
+    #[inline]
+    pub fn iter_entities(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.archetypes
+            .iter()
+            .flat_map(|archetype| archetype.entities().iter().copied())
     }
 
     /// Retrieves an [`EntityMut`] that exposes read and write operations for the given `entity`.
@@ -342,10 +344,7 @@ impl World {
     /// }
     ///
     /// let mut world = World::new();
-    /// let entity = world.spawn()
-    ///     .insert(Position { x: 0.0, y: 0.0 })
-    ///     .id();
-    ///
+    /// let entity = world.spawn(Position { x: 0.0, y: 0.0 }).id();
     /// let mut entity_mut = world.get_entity_mut(entity).unwrap();
     /// let mut position = entity_mut.get_mut::<Position>().unwrap();
     /// position.x = 1.0;
@@ -374,24 +373,106 @@ impl World {
     /// struct Num(u32);
     ///
     /// let mut world = World::new();
-    /// let entity = world.spawn()
+    /// let entity = world.spawn_empty()
     ///     .insert(Position { x: 0.0, y: 0.0 }) // add a single component
-    ///     .insert_bundle((Num(1), Label("hello"))) // add a bundle of components
+    ///     .insert((Num(1), Label("hello"))) // add a bundle of components
     ///     .id();
     ///
     /// let position = world.entity(entity).get::<Position>().unwrap();
     /// assert_eq!(position.x, 0.0);
     /// ```
-    pub fn spawn(&mut self) -> EntityMut {
+    pub fn spawn_empty(&mut self) -> EntityMut {
         self.flush();
         let entity = self.entities.alloc();
         // SAFETY: entity was just allocated
-        unsafe { self.spawn_at_internal(entity) }
+        unsafe { self.spawn_at_empty_internal(entity) }
+    }
+
+    /// Spawns a new [`Entity`] with a given [`Bundle`] of [components](`Component`) and returns
+    /// a corresponding [`EntityMut`], which can be used to add components to the entity or
+    /// retrieve its id.
+    ///
+    /// ```
+    /// use bevy_ecs::{bundle::Bundle, component::Component, world::World};
+    ///
+    /// #[derive(Component)]
+    /// struct Position {
+    ///   x: f32,
+    ///   y: f32,
+    /// }
+    ///
+    /// #[derive(Component)]
+    /// struct Velocity {
+    ///     x: f32,
+    ///     y: f32,
+    /// };
+    ///
+    /// #[derive(Component)]
+    /// struct Name(&'static str);
+    ///
+    /// #[derive(Bundle)]
+    /// struct PhysicsBundle {
+    ///     position: Position,
+    ///     velocity: Velocity,
+    /// }
+    ///
+    /// let mut world = World::new();
+    ///
+    /// // `spawn` can accept a single component:
+    /// world.spawn(Position { x: 0.0, y: 0.0 });
+
+    /// // It can also accept a tuple of components:
+    /// world.spawn((
+    ///     Position { x: 0.0, y: 0.0 },
+    ///     Velocity { x: 1.0, y: 1.0 },
+    /// ));
+
+    /// // Or it can accept a pre-defined Bundle of components:
+    /// world.spawn(PhysicsBundle {
+    ///     position: Position { x: 2.0, y: 2.0 },
+    ///     velocity: Velocity { x: 0.0, y: 4.0 },
+    /// });
+    ///
+    /// let entity = world
+    ///     // Tuples can also mix Bundles and Components
+    ///     .spawn((
+    ///         PhysicsBundle {
+    ///             position: Position { x: 2.0, y: 2.0 },
+    ///             velocity: Velocity { x: 0.0, y: 4.0 },
+    ///         },
+    ///         Name("Elaina Proctor"),
+    ///     ))
+    ///     // Calling id() will return the unique identifier for the spawned entity
+    ///     .id();
+    /// let position = world.entity(entity).get::<Position>().unwrap();
+    /// assert_eq!(position.x, 2.0);
+    /// ```
+    pub fn spawn<B: Bundle>(&mut self, bundle: B) -> EntityMut {
+        self.flush();
+        let entity = self.entities.alloc();
+        let entity_location = {
+            let bundle_info = self
+                .bundles
+                .init_info::<B>(&mut self.components, &mut self.storages);
+            let mut spawner = bundle_info.get_bundle_spawner(
+                &mut self.entities,
+                &mut self.archetypes,
+                &mut self.components,
+                &mut self.storages,
+                *self.change_tick.get_mut(),
+            );
+
+            // SAFETY: bundle's type matches `bundle_info`, entity is allocated but non-existent
+            unsafe { spawner.spawn_non_existent(entity, bundle) }
+        };
+
+        // SAFETY: entity and location are valid, as they were just created above
+        unsafe { EntityMut::new(self, entity, entity_location) }
     }
 
     /// # Safety
     /// must be called on an entity that was just allocated
-    unsafe fn spawn_at_internal(&mut self, entity: Entity) -> EntityMut {
+    unsafe fn spawn_at_empty_internal(&mut self, entity: Entity) -> EntityMut {
         let archetype = self.archetypes.empty_mut();
         // PERF: consider avoiding allocating entities in the empty archetype unless needed
         let table_row = self.storages.tables[archetype.table_id()].allocate(entity);
@@ -448,9 +529,7 @@ impl World {
     /// }
     ///
     /// let mut world = World::new();
-    /// let entity = world.spawn()
-    ///     .insert(Position { x: 0.0, y: 0.0 })
-    ///     .id();
+    /// let entity = world.spawn(Position { x: 0.0, y: 0.0 }).id();
     /// let position = world.get::<Position>(entity).unwrap();
     /// assert_eq!(position.x, 0.0);
     /// ```
@@ -471,9 +550,7 @@ impl World {
     /// }
     ///
     /// let mut world = World::new();
-    /// let entity = world.spawn()
-    ///     .insert(Position { x: 0.0, y: 0.0 })
-    ///     .id();
+    /// let entity = world.spawn(Position { x: 0.0, y: 0.0 }).id();
     /// let mut position = world.get_mut::<Position>(entity).unwrap();
     /// position.x = 1.0;
     /// ```
@@ -496,9 +573,7 @@ impl World {
     /// }
     ///
     /// let mut world = World::new();
-    /// let entity = world.spawn()
-    ///     .insert(Position { x: 0.0, y: 0.0 })
-    ///     .id();
+    /// let entity = world.spawn(Position { x: 0.0, y: 0.0 }).id();
     /// assert!(world.despawn(entity));
     /// assert!(world.get_entity(entity).is_none());
     /// assert!(world.get::<Position>(entity).is_none());
@@ -570,9 +645,9 @@ impl World {
     /// struct Label(&'static str);
     ///
     /// let mut world = World::new();
-    /// let a = world.spawn().insert_bundle((Order(2), Label("second"))).id();
-    /// let b = world.spawn().insert_bundle((Order(3), Label("third"))).id();
-    /// let c = world.spawn().insert_bundle((Order(1), Label("first"))).id();
+    /// let a = world.spawn((Order(2), Label("second"))).id();
+    /// let b = world.spawn((Order(3), Label("third"))).id();
+    /// let c = world.spawn((Order(1), Label("first"))).id();
     /// let mut entities = world.query::<(Entity, &Order, &Label)>()
     ///     .iter(&world)
     ///     .collect::<Vec<_>>();
@@ -601,8 +676,8 @@ impl World {
     /// struct B;
     ///
     /// let mut world = World::new();
-    /// let e1 = world.spawn().insert(A).id();
-    /// let e2 = world.spawn().insert_bundle((A, B)).id();
+    /// let e1 = world.spawn(A).id();
+    /// let e2 = world.spawn((A, B)).id();
     ///
     /// let mut query = world.query_filtered::<Entity, With<B>>();
     /// let matching_entities = query.iter(&world).collect::<Vec<Entity>>();
@@ -610,7 +685,7 @@ impl World {
     /// assert_eq!(matching_entities, vec![e2]);
     /// ```
     #[inline]
-    pub fn query_filtered<Q: WorldQuery, F: WorldQuery>(&mut self) -> QueryState<Q, F> {
+    pub fn query_filtered<Q: WorldQuery, F: ReadOnlyWorldQuery>(&mut self) -> QueryState<Q, F> {
         QueryState::new(self)
     }
 
@@ -660,8 +735,12 @@ impl World {
     #[inline]
     pub fn insert_resource<R: Resource>(&mut self, value: R) {
         let component_id = self.components.init_resource::<R>();
-        // SAFETY: component_id just initialized and corresponds to resource of type T
-        unsafe { self.insert_resource_with_id(component_id, value) };
+        OwningPtr::make(value, |ptr| {
+            // SAFETY: component_id was just initialized and corresponds to resource of type R
+            unsafe {
+                self.insert_resource_by_id(component_id, ptr);
+            }
+        });
     }
 
     /// Inserts a new non-send resource with standard starting values.
@@ -688,8 +767,12 @@ impl World {
     pub fn insert_non_send_resource<R: 'static>(&mut self, value: R) {
         self.validate_non_send_access::<R>();
         let component_id = self.components.init_non_send::<R>();
-        // SAFETY: component_id just initialized and corresponds to resource of type R
-        unsafe { self.insert_resource_with_id(component_id, value) };
+        OwningPtr::make(value, |ptr| {
+            // SAFETY: component_id was just initialized and corresponds to resource of type R
+            unsafe {
+                self.insert_resource_by_id(component_id, ptr);
+            }
+        });
     }
 
     /// Removes the resource of a given type and returns it, if it exists. Otherwise returns [None].
@@ -950,8 +1033,8 @@ impl World {
     /// struct B(f32);
     ///
     /// let mut world = World::new();
-    /// let e0 = world.spawn().id();
-    /// let e1 = world.spawn().id();
+    /// let e0 = world.spawn_empty().id();
+    /// let e1 = world.spawn_empty().id();
     /// world.insert_or_spawn_batch(vec![
     ///   (e0, (A("a"), B(0.0))), // the first entity
     ///   (e1, (A("b"), B(1.0))), // the second entity
@@ -1068,7 +1151,7 @@ impl World {
     /// struct B(u32);
     /// let mut world = World::new();
     /// world.insert_resource(A(1));
-    /// let entity = world.spawn().insert(B(1)).id();
+    /// let entity = world.spawn(B(1)).id();
     ///
     /// world.resource_scope(|world, mut a: Mut<A>| {
     ///     let b = world.get_mut::<B>(entity).unwrap();
@@ -1076,7 +1159,13 @@ impl World {
     /// });
     /// assert_eq!(world.get_resource::<A>().unwrap().0, 2);
     /// ```
-    pub fn resource_scope<R: Resource, U>(&mut self, f: impl FnOnce(&mut World, Mut<R>) -> U) -> U {
+    pub fn resource_scope<
+        R: 'static, /* The resource doesn't need to be Send nor Sync. */
+        U,
+    >(
+        &mut self,
+        f: impl FnOnce(&mut World, Mut<R>) -> U,
+    ) -> U {
         let last_change_tick = self.last_change_tick();
         let change_tick = self.change_tick();
 
@@ -1084,6 +1173,13 @@ impl World {
             .components
             .get_resource_id(TypeId::of::<R>())
             .unwrap_or_else(|| panic!("resource does not exist: {}", std::any::type_name::<R>()));
+
+        // If the resource isn't send and sync, validate that we are on the main thread, so that we can access it.
+        let component_info = self.components().get_info(component_id).unwrap();
+        if !component_info.is_send_and_sync() {
+            self.validate_non_send_access::<R>();
+        }
+
         let (ptr, mut ticks) = {
             let resource_archetype = self.archetypes.resource_mut();
             let unique_components = resource_archetype.unique_components_mut();
@@ -1208,24 +1304,6 @@ impl World {
         self.get_resource_unchecked_mut_with_id(component_id)
     }
 
-    /// # Safety
-    /// `component_id` must be valid and correspond to a resource component of type `R`
-    #[inline]
-    unsafe fn insert_resource_with_id<R>(&mut self, component_id: ComponentId, value: R) {
-        let change_tick = self.change_tick();
-        let column = self.initialize_resource_internal(component_id);
-        if column.is_empty() {
-            // SAFETY: column is of type R and has been allocated above
-            OwningPtr::make(value, |ptr| {
-                column.push(ptr, ComponentTicks::new(change_tick));
-            });
-        } else {
-            // SAFETY: column is of type R and has already been allocated
-            *column.get_data_unchecked_mut(0).deref_mut::<R>() = value;
-            column.get_ticks_unchecked_mut(0).set_changed(change_tick);
-        }
-    }
-
     /// Inserts a new resource with the given `value`. Will replace the value if it already existed.
     ///
     /// **You should prefer to use the typed API [`World::insert_resource`] where possible and only
@@ -1233,6 +1311,8 @@ impl World {
     ///
     /// # Safety
     /// The value referenced by `value` must be valid for the given [`ComponentId`] of this world
+    /// `component_id` must exist in this [`World`]
+    #[inline]
     pub unsafe fn insert_resource_by_id(
         &mut self,
         component_id: ComponentId,
@@ -1240,12 +1320,7 @@ impl World {
     ) {
         let change_tick = self.change_tick();
 
-        self.components().get_info(component_id).unwrap_or_else(|| {
-            panic!(
-                "insert_resource_by_id called with component id which doesn't exist in this world"
-            )
-        });
-        // SAFETY: component_id is valid, checked by the lines above
+        // SAFETY: component_id is valid, ensured by caller
         let column = self.initialize_resource_internal(component_id);
         if column.is_empty() {
             // SAFETY: column is of type R and has been allocated above
@@ -1564,12 +1639,12 @@ mod tests {
     use super::World;
     use crate::{
         change_detection::DetectChanges,
-        component::{ComponentDescriptor, ComponentId, ComponentInfo, StorageType},
+        component::{ComponentDescriptor, ComponentInfo, StorageType},
         ptr::OwningPtr,
         system::Resource,
     };
     use bevy_ecs_macros::Component;
-    use bevy_utils::HashSet;
+    use bevy_utils::{HashMap, HashSet};
     use std::{
         any::TypeId,
         panic,
@@ -1676,7 +1751,7 @@ mod tests {
         let res = panic::catch_unwind(|| {
             let mut world = World::new();
             world
-                .spawn()
+                .spawn_empty()
                 .insert(helper.make_component(true, 0))
                 .insert(helper.make_component(false, 1));
 
@@ -1783,62 +1858,6 @@ mod tests {
         assert_eq!(DROP_COUNT.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn insert_resource_by_id_drop_old() {
-        let drop_test_helper = DropTestHelper::new();
-        let res = std::panic::catch_unwind(|| {
-            let mut world = World::new();
-
-            world.insert_resource(drop_test_helper.make_component(false, 0));
-            let component_id = world
-                .components()
-                .get_resource_id(std::any::TypeId::of::<MayPanicInDrop>())
-                .unwrap();
-
-            OwningPtr::make(drop_test_helper.make_component(true, 1), |ptr| {
-                // SAFETY: value is valid for the component layout
-                unsafe {
-                    world.insert_resource_by_id(component_id, ptr);
-                }
-            });
-
-            OwningPtr::make(drop_test_helper.make_component(false, 2), |ptr| {
-                // SAFETY: value is valid for the component layout
-                unsafe {
-                    world.insert_resource_by_id(component_id, ptr);
-                }
-            });
-        });
-
-        let drop_log = drop_test_helper.finish(res);
-
-        assert_eq!(
-            drop_log,
-            [
-                DropLogItem::Create(0),
-                DropLogItem::Create(1),
-                DropLogItem::Drop(0), // inserting 1 drops 0
-                DropLogItem::Create(2),
-                DropLogItem::Drop(1), // inserting 2 drops 1
-                DropLogItem::Drop(2), // 2 could not be inserted because dropping 1 panicked, so it is dropped as well
-            ]
-        );
-    }
-
-    #[test]
-    #[should_panic = "insert_resource_by_id called with component id which doesn't exist in this world"]
-    fn insert_resource_by_id_invalid_component_id() {
-        let invalid_component_id = ComponentId::new(usize::MAX);
-
-        let mut world = World::new();
-        OwningPtr::make((), |ptr| {
-            // SAFETY: ptr must be valid for the component_id `invalid_component_id` which is invalid, but checked by `insert_resource_by_id`
-            unsafe {
-                world.insert_resource_by_id(invalid_component_id, ptr);
-            }
-        });
-    }
-
     #[derive(Component)]
     struct Foo;
 
@@ -1851,13 +1870,13 @@ mod tests {
     #[test]
     fn inspect_entity_components() {
         let mut world = World::new();
-        let ent0 = world.spawn().insert_bundle((Foo, Bar, Baz)).id();
-        let ent1 = world.spawn().insert_bundle((Foo, Bar)).id();
-        let ent2 = world.spawn().insert_bundle((Bar, Baz)).id();
-        let ent3 = world.spawn().insert_bundle((Foo, Baz)).id();
-        let ent4 = world.spawn().insert_bundle((Foo,)).id();
-        let ent5 = world.spawn().insert_bundle((Bar,)).id();
-        let ent6 = world.spawn().insert_bundle((Baz,)).id();
+        let ent0 = world.spawn((Foo, Bar, Baz)).id();
+        let ent1 = world.spawn((Foo, Bar)).id();
+        let ent2 = world.spawn((Bar, Baz)).id();
+        let ent3 = world.spawn((Foo, Baz)).id();
+        let ent4 = world.spawn(Foo).id();
+        let ent5 = world.spawn(Bar).id();
+        let ent6 = world.spawn(Baz).id();
 
         fn to_type_ids(component_infos: Vec<&ComponentInfo>) -> HashSet<Option<TypeId>> {
             component_infos
@@ -1897,5 +1916,74 @@ mod tests {
             to_type_ids(world.inspect_entity(ent6)),
             [Some(baz_id)].into()
         );
+    }
+
+    #[test]
+    fn iterate_entities() {
+        let mut world = World::new();
+        let mut entity_counters = HashMap::new();
+
+        let iterate_and_count_entities = |world: &World, entity_counters: &mut HashMap<_, _>| {
+            entity_counters.clear();
+            for entity in world.iter_entities() {
+                let counter = entity_counters.entry(entity).or_insert(0);
+                *counter += 1;
+            }
+        };
+
+        // Adding one entity and validating iteration
+        let ent0 = world.spawn((Foo, Bar, Baz)).id();
+
+        iterate_and_count_entities(&world, &mut entity_counters);
+        assert_eq!(entity_counters[&ent0], 1);
+        assert_eq!(entity_counters.len(), 1);
+
+        // Spawning three more entities and then validating iteration
+        let ent1 = world.spawn((Foo, Bar)).id();
+        let ent2 = world.spawn((Bar, Baz)).id();
+        let ent3 = world.spawn((Foo, Baz)).id();
+
+        iterate_and_count_entities(&world, &mut entity_counters);
+
+        assert_eq!(entity_counters[&ent0], 1);
+        assert_eq!(entity_counters[&ent1], 1);
+        assert_eq!(entity_counters[&ent2], 1);
+        assert_eq!(entity_counters[&ent3], 1);
+        assert_eq!(entity_counters.len(), 4);
+
+        // Despawning first entity and then validating the iteration
+        assert!(world.despawn(ent0));
+
+        iterate_and_count_entities(&world, &mut entity_counters);
+
+        assert_eq!(entity_counters[&ent1], 1);
+        assert_eq!(entity_counters[&ent2], 1);
+        assert_eq!(entity_counters[&ent3], 1);
+        assert_eq!(entity_counters.len(), 3);
+
+        // Spawning three more entities, despawning three and then validating the iteration
+        let ent4 = world.spawn(Foo).id();
+        let ent5 = world.spawn(Bar).id();
+        let ent6 = world.spawn(Baz).id();
+
+        assert!(world.despawn(ent2));
+        assert!(world.despawn(ent3));
+        assert!(world.despawn(ent4));
+
+        iterate_and_count_entities(&world, &mut entity_counters);
+
+        assert_eq!(entity_counters[&ent1], 1);
+        assert_eq!(entity_counters[&ent5], 1);
+        assert_eq!(entity_counters[&ent6], 1);
+        assert_eq!(entity_counters.len(), 3);
+
+        // Despawning remaining entities and then validating the iteration
+        assert!(world.despawn(ent1));
+        assert!(world.despawn(ent5));
+        assert!(world.despawn(ent6));
+
+        iterate_and_count_entities(&world, &mut entity_counters);
+
+        assert_eq!(entity_counters.len(), 0);
     }
 }
